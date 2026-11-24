@@ -28,13 +28,13 @@ export default function Landing() {
 
         <div className="flex flex-col items-center gap-3 sm:flex-row">
           <Link
-            to="/dashboard"
+            to="/sign-in"
             className="inline-flex items-center rounded-full bg-primary px-6 py-2.5 text-sm font-medium text-primary-foreground transition-opacity hover:opacity-90"
           >
             Get started
           </Link>
           <Link
-            to="/dashboard"
+            to="/sign-in"
             className="text-sm text-muted-foreground hover:text-foreground"
           >
             Sign in

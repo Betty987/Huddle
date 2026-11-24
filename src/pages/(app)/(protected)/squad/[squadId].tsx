@@ -14,7 +14,7 @@
 
 import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { useQuery, useMutations, useAuth } from 'deepspace'
+import { useQuery, useMutations, useAuth, useUserLookup } from 'deepspace'
 import type { RecordData } from 'deepspace'
 import {
   ArrowLeft, Plus, ExternalLink, Trash2, MessageSquare, ChevronDown, Users,
@@ -575,6 +575,13 @@ function MembersPanel({
   onClose: () => void
 }) {
   const { success: toastSuccess, error: toastError } = useToast()
+  const { getName } = useUserLookup()
+
+  const displayName = (uid: string | undefined) => {
+    if (!uid) return '(unknown)'
+    if (uid === userId) return 'You'
+    return getName(uid) ?? uid.slice(0, 14) + '…'
+  }
 
   const handleRoleChange = async (targetUserId: string, role: string) => {
     const res = await callAction('changeRole', { squadId, targetUserId, role })
@@ -603,8 +610,8 @@ function MembersPanel({
         <div className="space-y-2 py-1">
           {members.map((m) => (
             <div key={m.recordId} className="flex items-center justify-between gap-3">
-              <span className="truncate font-mono text-sm text-foreground">
-                {m.userId === userId ? 'You' : m.userId.slice(0, 14) + '…'}
+              <span className="truncate text-sm text-foreground">
+                {displayName(m.userId)}
               </span>
               {myRole === 'owner' && m.userId !== userId && m.role !== 'owner' ? (
                 <select

@@ -23,6 +23,29 @@ function roleAtLeast(actual: SquadRole, minimum: SquadRole): boolean {
   return order.indexOf(actual) >= order.indexOf(minimum)
 }
 
+/**
+ * Extract the custom-field bag from a single tools.query record.
+ *
+ * tools.query returns Array<{ recordId, data: T, createdBy, createdAt, updatedAt }>.
+ * Custom fields live under .data — not at the top level of the record.
+ */
+function qData(r: unknown): Record<string, unknown> {
+  return ((r as { data?: Record<string, unknown> })?.data) ?? {}
+}
+
+/**
+ * Extract the custom-field bag from a tools.get result.
+ *
+ * tools.get returns { record: { recordId, data: T, createdBy, createdAt, updatedAt } }.
+ * result.data is the GetActionData wrapper, so the field bag is at result.data.record.data.
+ */
+function gData(result: { data?: unknown }): Record<string, unknown> {
+  return (
+    (result.data as { record?: { data?: Record<string, unknown> } } | undefined)
+      ?.record?.data ?? {}
+  )
+}
+
 /** Look up the caller's membership record for a squad. Returns null if not a member. */
 async function getMembership(
   tools: Parameters<ActionHandler<Env>>[0]['tools'],
@@ -35,8 +58,11 @@ async function getMembership(
   })
   if (!result.success || !result.data?.records?.length) return null
   const rec = result.data.records[0] as unknown as Record<string, unknown>
+  const data = qData(rec)
+  const role = data['role'] as SquadRole | undefined
+  if (!role) return null   // malformed record — treat as non-member
   return {
-    role: rec['role'] as SquadRole,
+    role,
     recordId: rec['recordId'] as string,
   }
 }
@@ -102,18 +128,18 @@ export const actions: Record<string, ActionHandler<Env>> = {
 
     const squad = squadsResult.data.records[0] as unknown as Record<string, unknown>
     const squadId = squad['recordId'] as string
+    const squadFields = qData(squad)
 
     // Check if already a member
     const existing = await getMembership(tools, userId, squadId)
     if (existing) return { success: false, error: 'You are already in this squad' }
 
-    // Add to memberIds array
-    let memberIds: string[] = []
-    try {
-      memberIds = JSON.parse(squad['memberIds'] as string) as string[]
-    } catch {
-      memberIds = []
-    }
+    // Add to memberIds array — the platform auto-parses interpretation:'json' fields,
+    // so squadFields['memberIds'] may already be a string[] rather than a JSON string.
+    const rawIds = squadFields['memberIds']
+    let memberIds: string[] = Array.isArray(rawIds)
+      ? (rawIds as string[])
+      : (() => { try { return JSON.parse(rawIds as string) as string[] } catch { return [] } })()
     if (!memberIds.includes(userId)) memberIds.push(userId)
 
     // Write 1: add userId to the squad's collaboratorsField array.
@@ -131,7 +157,7 @@ export const actions: Record<string, ActionHandler<Env>> = {
       return { success: false, error: 'Failed to record membership; rolled back' }
     }
 
-    return { success: true, data: { squadId, name: squad['name'] } }
+    return { success: true, data: { squadId, name: squadFields['name'] as string } }
   },
 
   /**
@@ -208,8 +234,7 @@ export const actions: Record<string, ActionHandler<Env>> = {
 
     // Verify the job belongs to this squad (prevents moving another squad's job)
     const jobResult = await tools.get('jobs', jobId)
-    const jobData = jobResult.data as unknown as Record<string, unknown> | undefined
-    if (!jobResult.success || jobData?.['squadId'] !== squadId) {
+    if (!jobResult.success || gData(jobResult)['squadId'] !== squadId) {
       return { success: false, error: 'Job not found in this squad' }
     }
 
@@ -235,8 +260,7 @@ export const actions: Record<string, ActionHandler<Env>> = {
     }
 
     const jobResult2 = await tools.get('jobs', jobId)
-    const jobData2 = jobResult2.data as unknown as Record<string, unknown> | undefined
-    if (!jobResult2.success || jobData2?.['squadId'] !== squadId) {
+    if (!jobResult2.success || gData(jobResult2)['squadId'] !== squadId) {
       return { success: false, error: 'Job not found in this squad' }
     }
 
@@ -273,9 +297,11 @@ export const actions: Record<string, ActionHandler<Env>> = {
     if (!squadResult.success || !squadResult.data) {
       return { success: false, error: 'Could not load squad' }
     }
-    const sd = squadResult.data as unknown as Record<string, unknown>
-    let memberIds: string[] = []
-    try { memberIds = JSON.parse(sd['memberIds'] as string) } catch { memberIds = [] }
+    const sd = gData(squadResult)
+    const rawIds = sd['memberIds']
+    let memberIds: string[] = Array.isArray(rawIds)
+      ? (rawIds as string[])
+      : (() => { try { return JSON.parse(rawIds as string) as string[] } catch { return [] } })()
     const originalMemberIds = [...memberIds]
     memberIds = memberIds.filter((id) => id !== userId)
 
@@ -316,10 +342,11 @@ export const actions: Record<string, ActionHandler<Env>> = {
 
     const members = (result.data?.records ?? []).map((r) => {
       const rec = r as unknown as Record<string, unknown>
+      const data = qData(rec)
       return {
         recordId: rec['recordId'] as string,
-        userId:   rec['userId']   as string,
-        role:     rec['role']     as string,
+        userId:   data['userId']  as string,
+        role:     data['role']    as string,
       }
     })
 
@@ -352,8 +379,7 @@ export const actions: Record<string, ActionHandler<Env>> = {
 
     // Verify the job belongs to this squad.
     const jobResult = await tools.get('jobs', jobId)
-    const jobData = jobResult.data as unknown as Record<string, unknown> | undefined
-    if (!jobResult.success || jobData?.['squadId'] !== squadId) {
+    if (!jobResult.success || gData(jobResult)['squadId'] !== squadId) {
       return { success: false, error: 'Job not found in this squad' }
     }
 

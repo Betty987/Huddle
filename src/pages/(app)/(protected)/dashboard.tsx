@@ -38,8 +38,13 @@ export default function DashboardPage() {
   // the DO only streams squad records where the caller's userId is in memberIds.
   const mySquads = squads
 
+  // The platform auto-parses interpretation:'json' fields before delivering them
+  // to the client via useQuery, so memberIds arrives as a string[] — not a JSON string.
+  // Guard against both shapes so this never crashes or returns a wrong count.
   const getMemberCount = (squad: RecordData<SquadData>) => {
-    try { return (JSON.parse(squad.data.memberIds) as string[]).length } catch { return 0 }
+    const raw = squad.data.memberIds as unknown
+    if (Array.isArray(raw)) return (raw as string[]).length
+    try { return (JSON.parse(raw as string) as string[]).length } catch { return 0 }
   }
 
   return (
