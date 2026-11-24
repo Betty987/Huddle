@@ -166,36 +166,51 @@ export default function SquadPage() {
       </div>
 
       {/* Kanban — columns are MY status */}
-      <div className="flex flex-1 gap-3 overflow-x-auto p-4">
-        {COLUMNS.map((col) => {
-          const colJobs = jobs.filter((j) => (myStatusMap.get(j.recordId) ?? 'saved') === col.id)
-          return (
-            <div key={col.id} className="flex w-64 shrink-0 flex-col gap-2">
-              <div className="flex items-center justify-between px-1">
-                <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-                  {col.label}
-                </span>
-                <span className="text-xs text-muted-foreground">{colJobs.length}</span>
+      {jobs.length === 0 ? (
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
+          <p className="text-sm font-medium text-foreground">No jobs yet.</p>
+          <p className="text-sm text-muted-foreground">
+            Paste a job link to add your first one.
+          </p>
+          {canWrite && (
+            <Button size="sm" onClick={() => setShowImport(true)}>
+              <Link2 className="h-4 w-4" aria-hidden />
+              Import a job
+            </Button>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-1 gap-3 overflow-x-auto p-4">
+          {COLUMNS.map((col) => {
+            const colJobs = jobs.filter((j) => (myStatusMap.get(j.recordId) ?? 'saved') === col.id)
+            return (
+              <div key={col.id} className="flex w-64 shrink-0 flex-col gap-2">
+                <div className="flex items-center justify-between px-1">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                    {col.label}
+                  </span>
+                  <span className="text-xs text-muted-foreground">{colJobs.length}</span>
+                </div>
+                <div className="flex flex-col gap-2">
+                  {colJobs.map((job) => (
+                    <JobCard
+                      key={job.recordId}
+                      job={job}
+                      myStatus={myStatusMap.get(job.recordId) ?? 'saved'}
+                      squadProgress={squadProgressMap.get(job.recordId) ?? {}}
+                      canWrite={canWrite}
+                      onSetStatus={handleSetStatus}
+                      onDelete={handleDeleteJob}
+                      onClick={() => setSelectedJob(job)}
+                      isSelected={selectedJob?.recordId === job.recordId}
+                    />
+                  ))}
+                </div>
               </div>
-              <div className="flex flex-col gap-2">
-                {colJobs.map((job) => (
-                  <JobCard
-                    key={job.recordId}
-                    job={job}
-                    myStatus={myStatusMap.get(job.recordId) ?? 'saved'}
-                    squadProgress={squadProgressMap.get(job.recordId) ?? {}}
-                    canWrite={canWrite}
-                    onSetStatus={handleSetStatus}
-                    onDelete={handleDeleteJob}
-                    onClick={() => setSelectedJob(job)}
-                    isSelected={selectedJob?.recordId === job.recordId}
-                  />
-                ))}
-              </div>
-            </div>
-          )
-        })}
-      </div>
+            )
+          })}
+        </div>
+      )}
 
       {showImport && (
         <ImportJobModal
@@ -804,6 +819,9 @@ function MembersPanel({
 }) {
   const { success: toastSuccess, error: toastError } = useToast()
   const { getName } = useUserLookup()
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
+  const [confirmInput, setConfirmInput] = useState('')
+  const [deleting, setDeleting] = useState(false)
 
   const displayName = (uid: string | undefined) => {
     if (!uid) return '(unknown)'
@@ -818,8 +836,9 @@ function MembersPanel({
   }
 
   const handleDelete = async () => {
-    if (!window.confirm('Permanently delete this squad and all its jobs? This cannot be undone.')) return
+    setDeleting(true)
     const res = await callAction('deleteSquad', { squadId })
+    setDeleting(false)
     if (res.success) {
       toastSuccess('Squad deleted', '')
       window.location.href = '/dashboard'
@@ -862,16 +881,50 @@ function MembersPanel({
           )}
         </div>
 
-        {myRole === 'owner' && (
+        {myRole === 'owner' && !showDeleteConfirm && (
           <div className="border-t border-border pt-3">
             <Button
-              variant="destructive"
+              variant="ghost"
               size="sm"
-              className="w-full"
-              onClick={handleDelete}
+              className="w-full text-destructive hover:bg-destructive/10 hover:text-destructive"
+              onClick={() => setShowDeleteConfirm(true)}
             >
-              Delete squad
+              Delete squad…
             </Button>
+          </div>
+        )}
+
+        {myRole === 'owner' && showDeleteConfirm && (
+          <div className="space-y-3 border-t border-border pt-3">
+            <p className="text-sm text-muted-foreground">
+              This permanently deletes all jobs, applications and comments.
+              Type <span className="font-medium text-foreground">delete</span> to confirm.
+            </p>
+            <Input
+              placeholder="delete"
+              value={confirmInput}
+              onChange={(e) => setConfirmInput(e.target.value)}
+              autoFocus
+            />
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                className="flex-1"
+                onClick={() => { setShowDeleteConfirm(false); setConfirmInput('') }}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                className="flex-1"
+                disabled={confirmInput !== 'delete' || deleting}
+                onClick={handleDelete}
+              >
+                {deleting ? 'Deleting…' : 'Delete'}
+              </Button>
+            </div>
           </div>
         )}
       </DialogContent>

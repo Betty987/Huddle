@@ -7,7 +7,7 @@
  */
 
 import { useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useAuth, AuthOverlay } from 'deepspace'
 
 export default function SignInPage() {
@@ -25,7 +25,13 @@ export default function SignInPage() {
   }
 
   return (
-    <div className="flex min-h-[calc(100vh-4rem)] items-center justify-center bg-background">
+    <div className="flex min-h-[calc(100vh-4rem)] flex-col items-center justify-center gap-4 bg-background">
+      <Link
+        to="/"
+        className="text-sm text-muted-foreground hover:text-foreground"
+      >
+        ← Back to home
+      </Link>
       <AuthOverlay
         title="Join Huddle"
         description="Sign in or create an account to start hunting together."

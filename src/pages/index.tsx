@@ -43,9 +43,9 @@ export default function Landing() {
 
         <ul className="mt-6 grid grid-cols-1 gap-4 text-left sm:grid-cols-3 max-w-2xl w-full">
           {[
-            { title: 'Shared board', body: 'Everyone in your squad sees new postings the moment they land.' },
-            { title: 'Role-based access', body: 'Owners manage the squad. Members track. Viewers read-only.' },
-            { title: 'Deadline alerts', body: 'Email reminders 48 hours before an application closes.' },
+            { title: 'Paste a link, AI fills the card', body: 'Drop in a job URL and Claude extracts the title, company, deadline and sponsorship automatically.' },
+            { title: 'Shared board', body: 'Everyone in your squad sees new postings the moment they land. Track your own status without spoiling others.' },
+            { title: 'Deadline alerts', body: 'Email reminders 48 hours before an application closes — only if you haven\'t applied yet.' },
           ].map((f) => (
             <li key={f.title} className="rounded-lg border border-border bg-card p-4">
               <p className="font-medium text-foreground">{f.title}</p>
