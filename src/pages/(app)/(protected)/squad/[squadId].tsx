@@ -1,15 +1,16 @@
 /**
- * Squad board — real-time Kanban for a squad's job cards.
+ * Squad board — per-person Kanban for a squad's job cards.
  *
- * Live data: useQuery subscribes over WebSocket; every member sees card moves
- * and new jobs instantly without refresh.
+ * Data model:
+ *   jobs         — shared postings (title, company, etc.) — no meaningful status
+ *   applications — per-person status: { squadId, jobId, userId, status }
  *
- * RBAC: status changes and job creation call server actions which re-check the
- * caller's squad role server-side.  The UI also hides action buttons from
- * viewers, but the server never trusts the UI.
+ * Board shows MY status column.  Jobs with no application record appear in Saved.
+ * Cards show a squad progress summary ("2 applied · 1 OA").
+ * Job detail panel lists every member's current status and all comments.
  *
- * Data model: useQuery returns RecordData<T>[] — custom fields live in
- * record.data, system fields (recordId, createdBy, createdAt) on the wrapper.
+ * RBAC: setMyStatus and job mutations call server actions which re-check the
+ * caller's squad role server-side.  Viewers see the board but cannot write.
  */
 
 import { useState, useEffect } from 'react'
@@ -29,13 +30,14 @@ import { cn } from '@/lib/utils'
 
 // ── Data types (fields only — recordId / createdBy / createdAt on wrapper) ───
 
-type MemberInfo  = { recordId: string; userId: string; role: string }
-type SquadData   = { name: string; inviteCode: string; memberIds: string }
-type JobData     = {
+type MemberInfo      = { recordId: string; userId: string; role: string }
+type SquadData       = { name: string; inviteCode: string; memberIds: string }
+type JobData         = {
   squadId: string; title: string; company: string; url: string
-  roleType: string; deadline: string; sponsorship: string; notes: string; status: string
+  roleType: string; deadline: string; sponsorship: string; notes: string
 }
-type CommentData = { jobId: string; squadId: string; body: string }
+type ApplicationData = { squadId: string; jobId: string; userId: string; status: string }
+type CommentData     = { jobId: string; squadId: string; body: string }
 
 // ── Kanban columns ────────────────────────────────────────────────────────────
 
@@ -56,7 +58,8 @@ export default function SquadPage() {
   const { error: toastError } = useToast()
 
   const { records: squads, status: squadsStatus } = useQuery<SquadData>('squads', {})
-  const { records: jobs }    = useQuery<JobData>('jobs', { where: { squadId } })
+  const { records: jobs }            = useQuery<JobData>('jobs', { where: { squadId } })
+  const { records: allApplications } = useQuery<ApplicationData>('applications', { where: { squadId } })
 
   const [showAddJob, setShowAddJob]   = useState(false)
   const [selectedJob, setSelectedJob] = useState<RecordData<JobData> | null>(null)
@@ -76,8 +79,23 @@ export default function SquadPage() {
 
   useEffect(() => { refreshMembers() }, [squadId])
 
-  const squad = squads.find((s) => s.recordId === squadId)
+  const squad    = squads.find((s) => s.recordId === squadId)
   const canWrite = myRole === 'owner' || myRole === 'member'
+
+  // My personal status per job: Map<jobId, status>
+  const myStatusMap = new Map(
+    allApplications
+      .filter((a) => a.data.userId === userId)
+      .map((a) => [a.data.jobId, a.data.status]),
+  )
+
+  // Squad-level progress per job: Map<jobId, Record<status, count>>
+  const squadProgressMap = new Map<string, Record<string, number>>()
+  for (const app of allApplications) {
+    if (!squadProgressMap.has(app.data.jobId)) squadProgressMap.set(app.data.jobId, {})
+    const counts = squadProgressMap.get(app.data.jobId)!
+    counts[app.data.status] = (counts[app.data.status] ?? 0) + 1
+  }
 
   if (squadsStatus === 'loading') {
     return (
@@ -98,9 +116,9 @@ export default function SquadPage() {
     )
   }
 
-  const handleMoveJob = async (jobId: string, newStatus: string) => {
-    const res = await callAction('updateJobStatus', { jobId, squadId, status: newStatus })
-    if (!res.success) toastError('Could not move card', res.error ?? '')
+  const handleSetStatus = async (jobId: string, newStatus: string) => {
+    const res = await callAction('setMyStatus', { jobId, squadId, status: newStatus })
+    if (!res.success) toastError('Could not update status', res.error ?? '')
   }
 
   const handleDeleteJob = async (jobId: string) => {
@@ -140,10 +158,10 @@ export default function SquadPage() {
         )}
       </div>
 
-      {/* Kanban */}
+      {/* Kanban — columns are MY status */}
       <div className="flex flex-1 gap-3 overflow-x-auto p-4">
         {COLUMNS.map((col) => {
-          const colJobs = jobs.filter((j) => j.data.status === col.id)
+          const colJobs = jobs.filter((j) => (myStatusMap.get(j.recordId) ?? 'saved') === col.id)
           return (
             <div key={col.id} className="flex w-64 shrink-0 flex-col gap-2">
               <div className="flex items-center justify-between px-1">
@@ -157,8 +175,10 @@ export default function SquadPage() {
                   <JobCard
                     key={job.recordId}
                     job={job}
+                    myStatus={myStatusMap.get(job.recordId) ?? 'saved'}
+                    squadProgress={squadProgressMap.get(job.recordId) ?? {}}
                     canWrite={canWrite}
-                    onMove={handleMoveJob}
+                    onSetStatus={handleSetStatus}
                     onDelete={handleDeleteJob}
                     onClick={() => setSelectedJob(job)}
                     isSelected={selectedJob?.recordId === job.recordId}
@@ -195,6 +215,8 @@ export default function SquadPage() {
           job={selectedJob}
           squadId={squadId!}
           canWrite={canWrite}
+          applications={allApplications.filter((a) => a.data.jobId === selectedJob.recordId)}
+          members={members}
           onClose={() => setSelectedJob(null)}
         />
       )}
@@ -205,11 +227,13 @@ export default function SquadPage() {
 // ── JobCard ───────────────────────────────────────────────────────────────────
 
 function JobCard({
-  job, canWrite, onMove, onDelete, onClick, isSelected,
+  job, myStatus, squadProgress, canWrite, onSetStatus, onDelete, onClick, isSelected,
 }: {
   job: RecordData<JobData>
+  myStatus: string
+  squadProgress: Record<string, number>
   canWrite: boolean
-  onMove: (jobId: string, status: string) => void
+  onSetStatus: (jobId: string, status: string) => void
   onDelete: (jobId: string) => void
   onClick: () => void
   isSelected: boolean
@@ -221,6 +245,12 @@ function JobCard({
     ? Math.ceil((new Date(data.deadline).getTime() - Date.now()) / 86_400_000)
     : null
   const urgent = daysUntil !== null && daysUntil <= 3
+
+  // Squad progress line — skip 'saved' (it's the untracked default, uninteresting)
+  const progressSummary = COLUMNS
+    .filter((c) => c.id !== 'saved' && (squadProgress[c.id] ?? 0) > 0)
+    .map((c) => `${squadProgress[c.id]} ${c.label.toLowerCase()}`)
+    .join(' · ')
 
   return (
     <div
@@ -235,6 +265,10 @@ function JobCard({
     >
       <p className="pr-10 font-medium leading-snug text-foreground">{data.title || '—'}</p>
       <p className="mt-0.5 text-xs text-muted-foreground">{data.company || '—'}</p>
+
+      {progressSummary && (
+        <p className="mt-1 text-[10px] text-muted-foreground/70">{progressSummary}</p>
+      )}
 
       <div className="mt-2 flex flex-wrap gap-1.5">
         {data.sponsorship === 'yes' && (
@@ -256,7 +290,11 @@ function JobCard({
                 : 'bg-muted text-muted-foreground',
             )}
           >
-            {daysUntil !== null && daysUntil < 0 ? 'Closed' : daysUntil === 0 ? 'Due today' : data.deadline}
+            {daysUntil !== null && daysUntil < 0
+              ? 'Closed'
+              : daysUntil === 0
+              ? 'Due today'
+              : data.deadline}
           </span>
         )}
       </div>
@@ -271,7 +309,7 @@ function JobCard({
         >
           <div className="relative">
             <button
-              title="Move to column"
+              title="Set my status"
               className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
               onClick={() => setShowMoveMenu((v) => !v)}
             >
@@ -279,11 +317,11 @@ function JobCard({
             </button>
             {showMoveMenu && (
               <div className="absolute right-0 top-full z-10 mt-1 w-36 rounded-md border border-border bg-popover py-1 shadow-lg">
-                {COLUMNS.filter((c) => c.id !== data.status).map((c) => (
+                {COLUMNS.filter((c) => c.id !== myStatus).map((c) => (
                   <button
                     key={c.id}
                     className="block w-full px-3 py-1.5 text-left text-xs text-foreground hover:bg-muted"
-                    onClick={() => { onMove(job.recordId, c.id); setShowMoveMenu(false) }}
+                    onClick={() => { onSetStatus(job.recordId, c.id); setShowMoveMenu(false) }}
                   >
                     {c.label}
                   </button>
@@ -418,14 +456,17 @@ function AddJobModal({
 // ── JobDetailPanel ────────────────────────────────────────────────────────────
 
 function JobDetailPanel({
-  job, squadId, canWrite, onClose,
+  job, squadId, canWrite, applications, members, onClose,
 }: {
   job: RecordData<JobData>
   squadId: string
   canWrite: boolean
+  applications: RecordData<ApplicationData>[]
+  members: MemberInfo[]
   onClose: () => void
 }) {
   const { userId } = useAuth()
+  const { getName } = useUserLookup()
   const { records: comments } = useQuery<CommentData>('comments', {
     where: { jobId: job.recordId },
     orderBy: 'createdAt',
@@ -437,6 +478,12 @@ function JobDetailPanel({
 
   const { data } = job
 
+  const memberName = (uid: string | undefined) => {
+    if (!uid) return '(unknown)'
+    if (uid === userId) return 'You'
+    return getName(uid) ?? uid.slice(0, 8) + '…'
+  }
+
   const handleComment = async (e: React.FormEvent) => {
     e.preventDefault()
     if (!body.trim() || posting) return
@@ -445,6 +492,9 @@ function JobDetailPanel({
     setPosting(false)
     setBody('')
   }
+
+  // Build userId → status map for this job
+  const appByUser = new Map(applications.map((a) => [a.data.userId, a.data.status]))
 
   return (
     <div className="fixed inset-y-0 right-0 z-30 flex w-full max-w-sm flex-col border-l border-border bg-background shadow-xl">
@@ -463,8 +513,8 @@ function JobDetailPanel({
         </button>
       </div>
 
-      {/* Details */}
       <div className="flex-1 space-y-5 overflow-y-auto p-4">
+        {/* Job details */}
         <dl className="space-y-3 text-sm">
           {data.url && (
             <div>
@@ -505,6 +555,25 @@ function JobDetailPanel({
           )}
         </dl>
 
+        {/* Team tracker — each member's current status */}
+        {members.length > 0 && (
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+              Team tracker
+            </p>
+            <div className="space-y-1.5">
+              {members.map((m) => (
+                <div key={m.userId} className="flex items-center justify-between gap-2 text-sm">
+                  <span className="truncate text-foreground">{memberName(m.userId)}</span>
+                  <span className="shrink-0 capitalize text-muted-foreground">
+                    {appByUser.get(m.userId) ?? 'saved'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Comments */}
         <div>
           <div className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
@@ -516,7 +585,7 @@ function JobDetailPanel({
               <div key={c.recordId} className="group flex gap-2">
                 <div className="min-w-0 flex-1 rounded-lg bg-muted px-3 py-2">
                   <p className="text-xs text-muted-foreground">
-                    {c.createdBy === userId ? 'You' : c.createdBy.slice(0, 8)}
+                    {memberName(c.createdBy)}
                     <span className="ml-2">
                       {new Date(c.createdAt).toLocaleTimeString([], {
                         hour: '2-digit',

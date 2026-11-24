@@ -207,14 +207,16 @@ export const actions: Record<string, ActionHandler<Env>> = {
   },
 
   /**
-   * updateJobStatus — move a job card to a new status column.
+   * setMyStatus — set the caller's personal application status for a job.
    *
-   * Requires at least 'member' role.
+   * Creates or updates the caller's application record (upsert).
+   * Only the caller's own record is ever touched — server enforces this.
+   * Requires at least 'member' role; viewers cannot track applications.
    *
    * Input:  { jobId, squadId, status }
    * Output: {}
    */
-  async updateJobStatus({ userId, params, tools }) {
+  async setMyStatus({ userId, params, tools }) {
     const { jobId, squadId, status } = params as {
       jobId: string
       squadId: string
@@ -229,16 +231,24 @@ export const actions: Record<string, ActionHandler<Env>> = {
     const membership = await getMembership(tools, userId, squadId)
     if (!membership) return { success: false, error: 'You are not a member of this squad' }
     if (!roleAtLeast(membership.role, 'member')) {
-      return { success: false, error: 'Viewers cannot move cards' }
+      return { success: false, error: 'Viewers cannot track applications' }
     }
 
-    // Verify the job belongs to this squad (prevents moving another squad's job)
+    // Verify the job belongs to this squad
     const jobResult = await tools.get('jobs', jobId)
     if (!jobResult.success || gData(jobResult)['squadId'] !== squadId) {
       return { success: false, error: 'Job not found in this squad' }
     }
 
-    await tools.update('jobs', jobId, { status })
+    // Upsert: update if the caller already has an application, create otherwise
+    const existing = await tools.query('applications', { where: { jobId, userId }, limit: 1 })
+    if (existing.success && existing.data?.records?.length) {
+      const rec = existing.data.records[0] as unknown as Record<string, unknown>
+      await tools.update('applications', rec['recordId'] as string, { status })
+    } else {
+      await tools.create('applications', { squadId, jobId, userId, status })
+    }
+
     return { success: true, data: {} }
   },
 
@@ -264,11 +274,15 @@ export const actions: Record<string, ActionHandler<Env>> = {
       return { success: false, error: 'Job not found in this squad' }
     }
 
-    // Cascade-delete comments first (up to 500; re-loop if larger)
-    let deleted = 100
-    while (deleted >= 100) {
-      const r = await tools.deleteWhere('comments', { jobId }, 100)
-      deleted = r.success ? (r.data?.deleted ?? 0) : 0
+    // Cascade: comments → applications → job
+    for (const where of [{ jobId }] as const) {
+      for (const col of ['comments', 'applications'] as const) {
+        let deleted = 100
+        while (deleted >= 100) {
+          const r = await tools.deleteWhere(col, where, 100)
+          deleted = r.success ? (r.data?.deleted ?? 0) : 0
+        }
+      }
     }
 
     await tools.remove('jobs', jobId)
@@ -443,8 +457,8 @@ export const actions: Record<string, ActionHandler<Env>> = {
       return { success: false, error: 'Only the squad owner can delete the squad' }
     }
 
-    // Cascade-delete in dependency order
-    for (const collection of ['comments', 'jobs', 'squadMembers'] as const) {
+    // Cascade-delete in dependency order (applications keyed by squadId)
+    for (const collection of ['comments', 'applications', 'jobs', 'squadMembers'] as const) {
       let deleted = 100
       while (deleted >= 100) {
         const r = await tools.deleteWhere(collection, { squadId }, 100)
