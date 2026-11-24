@@ -144,13 +144,19 @@ export async function sendDeadlineReminders(env: Env): Promise<void> {
       const name = userName.get(userId) ?? 'there'
 
       try {
-        await ctx.integrations.call('email/send', {
+        const result = await ctx.integrations.call('email/send', {
           to:      email,
           subject: `Reminder: ${title} at ${company} closes ${deadline}`,
           html:    buildReminderEmail({ name, title, company, deadline, url: jobUrl }),
-        })
+        }) as { success?: boolean; error?: string } | undefined
+        // integrations.call may return a failure envelope rather than throwing
+        if (result?.success === false) {
+          console.error(
+            `[deadline-reminders] email/send returned error for ${email} (job ${job.recordId}): ${result.error}`,
+          )
+        }
       } catch (err) {
-        // Best-effort: log and continue so the remaining members still get emailed.
+        // Network / platform throw — log and continue so remaining members still get emailed.
         console.error(`[deadline-reminders] failed to email ${email} for job ${job.recordId}:`, err)
       }
     }
@@ -175,8 +181,10 @@ function buildReminderEmail({
   deadline: string
   url?: string
 }): string {
-  const link = url
-    ? `<p><a href="${escHtml(url)}" style="color:#6366f1">View job posting →</a></p>`
+  // Only render a link for safe http(s) URLs — blocks javascript: and data: schemes.
+  const safeUrl = url && /^https?:\/\//i.test(url) ? url : null
+  const link = safeUrl
+    ? `<p><a href="${escHtml(safeUrl)}" style="color:#6366f1">View job posting →</a></p>`
     : ''
   return `<!DOCTYPE html>
 <html lang="en">
