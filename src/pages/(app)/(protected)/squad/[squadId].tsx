@@ -18,7 +18,7 @@ import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutations, useAuth, useUserLookup } from 'deepspace'
 import type { RecordData } from 'deepspace'
 import {
-  ArrowLeft, Plus, ExternalLink, Trash2, MessageSquare, ChevronDown, Users,
+  ArrowLeft, Plus, ExternalLink, Trash2, MessageSquare, ChevronDown, Users, Link2,
 } from 'lucide-react'
 import {
   Button, Input, Label, Textarea, Dialog, DialogContent,
@@ -61,9 +61,10 @@ export default function SquadPage() {
   const { records: jobs }            = useQuery<JobData>('jobs', { where: { squadId } })
   const { records: allApplications } = useQuery<ApplicationData>('applications', { where: { squadId } })
 
-  const [showAddJob, setShowAddJob]   = useState(false)
-  const [selectedJob, setSelectedJob] = useState<RecordData<JobData> | null>(null)
-  const [showMembers, setShowMembers] = useState(false)
+  const [showAddJob, setShowAddJob]     = useState(false)
+  const [showImport, setShowImport]     = useState(false)
+  const [selectedJob, setSelectedJob]   = useState<RecordData<JobData> | null>(null)
+  const [showMembers, setShowMembers]   = useState(false)
   const [myRole, setMyRole]   = useState<string | null>(null)
   const [members, setMembers] = useState<MemberInfo[]>([])
 
@@ -151,10 +152,16 @@ export default function SquadPage() {
           Members
         </Button>
         {canWrite && (
-          <Button size="sm" onClick={() => setShowAddJob(true)}>
-            <Plus className="h-4 w-4" aria-hidden />
-            Add job
-          </Button>
+          <>
+            <Button variant="secondary" size="sm" onClick={() => setShowImport(true)}>
+              <Link2 className="h-4 w-4" aria-hidden />
+              Import
+            </Button>
+            <Button size="sm" onClick={() => setShowAddJob(true)}>
+              <Plus className="h-4 w-4" aria-hidden />
+              Add job
+            </Button>
+          </>
         )}
       </div>
 
@@ -189,6 +196,14 @@ export default function SquadPage() {
           )
         })}
       </div>
+
+      {showImport && (
+        <ImportJobModal
+          squadId={squadId!}
+          onClose={() => setShowImport(false)}
+          onImported={() => setShowImport(false)}
+        />
+      )}
 
       {showAddJob && (
         <AddJobModal
@@ -340,6 +355,150 @@ function JobCard({
         </div>
       )}
     </div>
+  )
+}
+
+// ── ImportJobModal ────────────────────────────────────────────────────────────
+
+function ImportJobModal({
+  squadId, onClose, onImported,
+}: {
+  squadId: string
+  onClose: () => void
+  onImported: () => void
+}) {
+  const [mode, setMode]     = useState<'url' | 'text'>('url')
+  const [url, setUrl]       = useState('')
+  const [text, setText]     = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError]   = useState<string | null>(null)
+
+  const handleUrl = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!url.trim()) return
+    setLoading(true)
+    setError(null)
+    const res = await callAction<{ jobId?: string; fallbackToText?: boolean }>(
+      'importJob', { squadId, url: url.trim() },
+    )
+    setLoading(false)
+    if (res.success) {
+      onImported()
+    } else {
+      setError(res.error ?? 'Something went wrong.')
+      // If the scrape failed, offer the text fallback automatically
+      if ((res.details as { fallbackToText?: boolean } | undefined)?.fallbackToText) {
+        setMode('text')
+      }
+    }
+  }
+
+  const handleText = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!text.trim()) return
+    setLoading(true)
+    setError(null)
+    const res = await callAction('importJobFromText', { squadId, text: text.trim(), url: url.trim() || undefined })
+    setLoading(false)
+    if (res.success) {
+      onImported()
+    } else {
+      setError(res.error ?? 'Something went wrong.')
+    }
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Import job from link</DialogTitle>
+        </DialogHeader>
+
+        {mode === 'url' ? (
+          <form onSubmit={handleUrl} className="space-y-4 py-1">
+            <div className="space-y-1.5">
+              <Label htmlFor="ij-url">Job posting URL</Label>
+              <Input
+                id="ij-url"
+                type="url"
+                placeholder="https://jobs.example.com/software-engineer"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                autoFocus
+                disabled={loading}
+              />
+              <p className="text-xs text-muted-foreground">
+                Huddle will scrape the page and extract the job details with AI.
+              </p>
+            </div>
+
+            {error && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                {error}
+              </div>
+            )}
+
+            <DialogFooter className="flex-col gap-2 sm:flex-row">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => { setMode('text'); setError(null) }}
+              >
+                Paste description instead
+              </Button>
+              <div className="flex gap-2 sm:ml-auto">
+                <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+                <Button type="submit" disabled={!url.trim() || loading}>
+                  {loading ? 'Importing…' : 'Import'}
+                </Button>
+              </div>
+            </DialogFooter>
+          </form>
+        ) : (
+          <form onSubmit={handleText} className="space-y-4 py-1">
+            <div className="space-y-1.5">
+              <Label htmlFor="ij-text">Job description</Label>
+              <Textarea
+                id="ij-text"
+                placeholder="Paste the full job posting text here…"
+                rows={8}
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                autoFocus
+                disabled={loading}
+              />
+              <p className="text-xs text-muted-foreground">
+                Paste the job description and AI will extract the details.
+              </p>
+            </div>
+
+            {error && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
+                {error}
+              </div>
+            )}
+
+            <DialogFooter className="flex-col gap-2 sm:flex-row">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => { setMode('url'); setError(null) }}
+              >
+                Back to URL import
+              </Button>
+              <div className="flex gap-2 sm:ml-auto">
+                <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+                <Button type="submit" disabled={text.trim().length < 50 || loading}>
+                  {loading ? 'Extracting…' : 'Import'}
+                </Button>
+              </div>
+            </DialogFooter>
+          </form>
+        )}
+      </DialogContent>
+    </Dialog>
   )
 }
 

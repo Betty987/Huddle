@@ -10,7 +10,7 @@ import { getAuthToken } from 'deepspace'
 export async function callAction<T = unknown>(
   name: string,
   params: Record<string, unknown>,
-): Promise<{ success: boolean; data?: T; error?: string }> {
+): Promise<{ success: boolean; data?: T; error?: string; details?: Record<string, unknown> }> {
   const token = await getAuthToken()
   if (!token) return { success: false, error: 'Not signed in' }
 
@@ -27,5 +27,5 @@ export async function callAction<T = unknown>(
     return { success: false, error: `Server error ${res.status}` }
   }
 
-  return res.json() as Promise<{ success: boolean; data?: T; error?: string }>
+  return res.json() as Promise<{ success: boolean; data?: T; error?: string; details?: Record<string, unknown> }>
 }

@@ -31,6 +31,9 @@ export const jobsSchema: CollectionSchema = {
     { name: 'notes',       storage: 'text', interpretation: 'plain' },
     // 'saved' | 'applied' | 'oa' | 'interview' | 'offer' | 'rejected'
     { name: 'status',      storage: 'text', interpretation: 'plain' },
+    // ISO timestamp set when the 48-hour deadline reminder email was sent.
+    // Empty / absent means no reminder has been sent yet.
+    { name: 'remindedAt',  storage: 'text', interpretation: 'plain' },
   ],
   permissions: {
     viewer: { read: false, create: false, update: false, delete: false },

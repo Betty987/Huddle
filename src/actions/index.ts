@@ -14,6 +14,7 @@
 
 import type { ActionHandler } from 'deepspace/worker'
 import type { Env } from '../../worker'
+import { sendDeadlineReminders } from '../cron.js'
 
 type SquadRole = 'owner' | 'member' | 'viewer'
 
@@ -75,6 +76,113 @@ function mintInviteCode(): string {
   for (const b of bytes) code += chars[b % chars.length]
   return code
 }
+
+// ── AI extraction ─────────────────────────────────────────────────────────────
+
+const EXTRACTION_SYSTEM =
+  'You are a job posting parser. Extract structured information and return ONLY valid JSON — no markdown fences, no explanation, no extra keys.'
+
+function extractionPrompt(text: string): string {
+  // Truncate so we don't blast a 50-page site through the LLM
+  const truncated = text.slice(0, 8_000)
+  return `Extract the following fields from this job posting and return a single JSON object.
+
+Fields:
+- title: string        — job title (required)
+- company: string      — company name (required)
+- location: string|null — office location, "Remote", or "Hybrid" (null if not found)
+- deadline: string|null — application deadline as YYYY-MM-DD (null if not found or unclear)
+- sponsorship: "yes"|"no"|"unknown" — visa/work-authorization sponsorship
+- requirements: string[] — up to 5 key requirements or qualifications, brief phrases
+
+Return JSON only. Example:
+{"title":"Software Engineer","company":"Acme","location":"San Francisco, CA","deadline":"2026-12-31","sponsorship":"no","requirements":["5+ years Python","Kubernetes","CI/CD pipelines"]}
+
+Job posting:
+<posting>
+${truncated}
+</posting>`
+}
+
+type ExtractedJob = {
+  title?: string
+  company?: string
+  location?: string | null
+  deadline?: string | null
+  sponsorship?: 'yes' | 'no' | 'unknown'
+  requirements?: string[]
+}
+
+type ActionOk   = { success: true;  data: Record<string, unknown> }
+type ActionFail = { success: false; error: string; details?: Record<string, unknown> }
+
+/** Shared extraction + job-create logic used by importJob and importJobFromText. */
+async function extractAndCreateJob(
+  tools: Parameters<ActionHandler<Env>>[0]['tools'],
+  { squadId, text, url }: { squadId: string; text: string; url?: string },
+): Promise<ActionOk | ActionFail> {
+  // ── 2. Extract with Claude ─────────────────────────────────────────────
+  const aiResult = await tools.integration('anthropic/chat-completion', {
+    model: 'claude-haiku-4-5',
+    max_tokens: 512,
+    temperature: 0,
+    system: EXTRACTION_SYSTEM,
+    messages: [{ role: 'user', content: extractionPrompt(text) }],
+  })
+
+  if (!aiResult.success) {
+    return { success: false as const, error: 'AI extraction failed. Try adding the job manually.' }
+  }
+
+  const aiData = aiResult.data as { content?: Array<{ type: string; text: string }> }
+  const rawText = aiData?.content?.find((b) => b.type === 'text')?.text ?? ''
+
+  let extracted: ExtractedJob
+  try {
+    // Claude might still wrap in a code fence despite instructions — strip it
+    const cleaned = rawText.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim()
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/)
+    if (!jsonMatch) throw new Error('No JSON object found')
+    extracted = JSON.parse(jsonMatch[0]) as ExtractedJob
+  } catch {
+    return { success: false as const, error: 'Could not parse AI response. Try adding the job manually.' }
+  }
+
+  if (!extracted.title?.trim() || !extracted.company?.trim()) {
+    return { success: false as const, error: 'Could not identify job title or company. Try adding the job manually.' }
+  }
+
+  // Build notes from location and requirements
+  const notesParts: string[] = []
+  if (extracted.location) notesParts.push(`Location: ${extracted.location}`)
+  if (extracted.requirements?.length) {
+    notesParts.push(`Requirements:\n${extracted.requirements.slice(0, 5).map((r) => `• ${r}`).join('\n')}`)
+  }
+
+  // Validate sponsorship value
+  const validSponsorship = ['yes', 'no', 'unknown'] as const
+  const sponsorship = validSponsorship.includes(extracted.sponsorship as 'yes' | 'no' | 'unknown')
+    ? (extracted.sponsorship as 'yes' | 'no' | 'unknown')
+    : 'unknown'
+
+  // ── 3. Create the job record ───────────────────────────────────────────
+  const jobResult = await tools.create('jobs', {
+    squadId,
+    title: extracted.title.trim(),
+    company: extracted.company.trim(),
+    url: url ?? '',
+    roleType: 'full-time',
+    deadline: extracted.deadline ?? '',
+    sponsorship,
+    notes: notesParts.join('\n\n'),
+    status: 'saved',
+  })
+
+  if (!jobResult.success) return { success: false as const, error: 'Failed to save job' }
+  return { success: true as const, data: { jobId: jobResult.data?.recordId } }
+}
+
+// ── Actions ───────────────────────────────────────────────────────────────────
 
 export const actions: Record<string, ActionHandler<Env>> = {
   /**
@@ -468,5 +576,100 @@ export const actions: Record<string, ActionHandler<Env>> = {
 
     await tools.remove('squads', squadId)
     return { success: true, data: {} }
+  },
+
+  /**
+   * importJob — scrape a job posting URL and extract structured data with Claude.
+   *
+   * Pipeline: firecrawl/scrape → anthropic/chat-completion → tools.create('jobs').
+   * Requires at least 'member' role.
+   *
+   * On scrape failure (blocked page, login wall, etc.) the response includes
+   * `data.fallbackToText: true` so the UI can drop into the text-paste path.
+   *
+   * Input:  { squadId, url }
+   * Output: { jobId }  |  { fallbackToText: true } on scrape failure
+   */
+  async importJob({ userId, params, tools }) {
+    const { squadId, url } = params as { squadId: string; url: string }
+
+    if (!url?.trim()) return { success: false, error: 'URL is required' }
+
+    const membership = await getMembership(tools, userId, squadId)
+    if (!membership) return { success: false, error: 'Not a member of this squad' }
+    if (!roleAtLeast(membership.role, 'member')) {
+      return { success: false, error: 'Viewers cannot add jobs' }
+    }
+
+    // ── 1. Scrape ──────────────────────────────────────────────────────────
+    const scrapeResult = await tools.integration('firecrawl/scrape', {
+      url: url.trim(),
+      formats: ['markdown'],
+      onlyMainContent: true,
+    })
+
+    if (!scrapeResult.success) {
+      return {
+        success: false,
+        error: 'Could not reach that page. It may be blocked or require a login. Paste the job description instead.',
+        details: { fallbackToText: true },
+      }
+    }
+
+    const scrapeData = scrapeResult.data as { data?: { markdown?: string } }
+    const markdown = scrapeData?.data?.markdown?.trim() ?? ''
+
+    if (markdown.length < 100) {
+      return {
+        success: false,
+        error: 'The page returned too little content to parse. Paste the job description instead.',
+        details: { fallbackToText: true },
+      }
+    }
+
+    return extractAndCreateJob(tools, { squadId, text: markdown, url: url.trim() })
+  },
+
+  /**
+   * triggerDeadlineReminders — manually run the deadline-reminder job.
+   *
+   * Owner-only.  Use this to test the reminder emails without waiting for the
+   * daily 09:00 UTC cron trigger.  Temporarily set a job's deadline to today
+   * or tomorrow, then call this action.
+   *
+   * Input:  {}
+   * Output: {}
+   */
+  async triggerDeadlineReminders({ userId, env }) {
+    if (userId !== env.OWNER_USER_ID) {
+      return { success: false, error: 'Owner only' }
+    }
+    await sendDeadlineReminders(env)
+    return { success: true, data: {} }
+  },
+
+  /**
+   * importJobFromText — extract a job from pasted text using Claude.
+   *
+   * Fallback path when scraping fails or the user prefers to paste directly.
+   * Requires at least 'member' role.
+   *
+   * Input:  { squadId, text, url? }
+   * Output: { jobId }
+   */
+  async importJobFromText({ userId, params, tools }) {
+    const { squadId, text, url } = params as { squadId: string; text: string; url?: string }
+
+    if (!text?.trim() || text.trim().length < 50) {
+      return { success: false, error: 'Please paste more of the job description (at least 50 characters).' }
+    }
+
+    const membership = await getMembership(tools, userId, squadId)
+    if (!membership) return { success: false, error: 'Not a member of this squad' }
+    if (!roleAtLeast(membership.role, 'member')) {
+      return { success: false, error: 'Viewers cannot add jobs' }
+    }
+
+    return extractAndCreateJob(tools, { squadId, text: text.trim(), url })
   },
 }
