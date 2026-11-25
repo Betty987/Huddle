@@ -5,9 +5,9 @@
 A shared job board for small groups. Paste a job link, AI fills in the card,
 and everyone tracks their own progress on the same postings, in real time.
 
-![Landing page](docs/board.png)
+![Landing page](docs/landing.png)
 
-![Squad board](docs/mainpage.png)
+![Squad board](docs/board.png)
 
 ## Why I built this
 
