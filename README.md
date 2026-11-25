@@ -62,25 +62,6 @@ RBAC, realtime records, server actions and cron in one SDK.
   but a failed send isn't retried.
 - **Import depends on the page being public.** The text-paste fallback covers the rest.
 
-## How I built it with a coding agent
-
-I used Claude Code and gave it specs one step at a time, reviewing each change
-before moving on. What I caught and changed myself:
-
-- **Two permission gaps:** any signed-in user could read every squad's members, and
-  anyone including viewers could comment on any job. Both are fixed with server actions.
-- **A bug the type-check missed:** the code read fields from the record wrapper instead of
-  `record.data`, so every role check silently failed and joining a squad could wipe its member
-  list. I traced it from a Members-panel crash and a "0 members" count.
-- **A product flaw found in testing:** a shared status meant A applying marked the
-  job applied for B. I redesigned it as per-person status.
-- **An invented integration:** the agent used a `resend/send-email` integration that doesn't
-  exist. I switched it to DeepSpace's built-in `email/send`.
-
-**Tested with two accounts:** per-person status, team tracker names, viewer blocked from
-adding/commenting/changing status, reminder emails with no duplicates, typed confirmation
-for deleting a squad, text-paste import and the LinkedIn fallback.
-
 ## Known gaps and next steps
 
 - Job reads are not yet scoped to squad members (any authenticated user can query jobs by squadId)
