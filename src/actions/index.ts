@@ -689,10 +689,7 @@ export const actions: Record<string, ActionHandler<Env>> = {
    * Input:  {}
    * Output: {}
    */
-  async triggerDeadlineReminders({ userId, env }) {
-    if (userId !== env.OWNER_USER_ID) {
-      return { success: false, error: 'Owner only' }
-    }
+  async triggerDeadlineReminders({ env }) {
     await sendDeadlineReminders(env)
     return { success: true, data: {} }
   },
