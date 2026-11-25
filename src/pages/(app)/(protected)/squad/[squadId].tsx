@@ -18,7 +18,7 @@ import { useParams, Link } from 'react-router-dom'
 import { useQuery, useMutations, useAuth, useUserLookup } from 'deepspace'
 import type { RecordData } from 'deepspace'
 import {
-  ArrowLeft, Plus, ExternalLink, Trash2, MessageSquare, ChevronDown, Users, Link2,
+  ArrowLeft, Plus, ExternalLink, Trash2, MessageSquare, ChevronDown, Users, Link2, Pencil, Bell,
 } from 'lucide-react'
 import {
   Button, Input, Label, Textarea, Dialog, DialogContent,
@@ -55,7 +55,7 @@ const COLUMNS = [
 export default function SquadPage() {
   const { squadId } = useParams<{ squadId: string }>()
   const { userId } = useAuth()
-  const { error: toastError } = useToast()
+  const { success: toastSuccess, error: toastError } = useToast()
 
   const { records: squads, status: squadsStatus } = useQuery<SquadData>('squads', {})
   const { records: jobs }            = useQuery<JobData>('jobs', { where: { squadId } })
@@ -64,6 +64,7 @@ export default function SquadPage() {
   const [showAddJob, setShowAddJob]     = useState(false)
   const [showImport, setShowImport]     = useState(false)
   const [selectedJob, setSelectedJob]   = useState<RecordData<JobData> | null>(null)
+  const [editingJob, setEditingJob]     = useState<RecordData<JobData> | null>(null)
   const [showMembers, setShowMembers]   = useState(false)
   const [myRole, setMyRole]   = useState<string | null>(null)
   const [members, setMembers] = useState<MemberInfo[]>([])
@@ -122,6 +123,12 @@ export default function SquadPage() {
     if (!res.success) toastError('Could not update status', res.error ?? '')
   }
 
+  const handleTriggerReminders = async () => {
+    const res = await callAction('triggerDeadlineReminders', {})
+    if (res.success) toastSuccess('Reminders sent', 'Check your inbox')
+    else toastError('Failed', res.error ?? '')
+  }
+
   const handleDeleteJob = async (jobId: string) => {
     const res = await callAction('deleteJob', { jobId, squadId })
     if (!res.success) toastError('Could not delete', res.error ?? '')
@@ -146,6 +153,12 @@ export default function SquadPage() {
           <span className="rounded-full border border-border px-2.5 py-0.5 text-xs text-muted-foreground">
             {myRole}
           </span>
+        )}
+        {myRole === 'owner' && (
+          <Button variant="secondary" size="sm" onClick={handleTriggerReminders} title="Send deadline reminder emails now">
+            <Bell className="h-4 w-4" aria-hidden />
+            Send reminders
+          </Button>
         )}
         <Button variant="secondary" size="sm" onClick={() => setShowMembers(true)}>
           <Users className="h-4 w-4" aria-hidden />
@@ -247,7 +260,18 @@ export default function SquadPage() {
           canWrite={canWrite}
           applications={allApplications.filter((a) => a.data.jobId === selectedJob.recordId)}
           members={members}
+          onEdit={canWrite ? () => setEditingJob(selectedJob) : undefined}
           onClose={() => setSelectedJob(null)}
+        />
+      )}
+
+      {editingJob && (
+        <EditJobModal
+          job={editingJob}
+          squadId={squadId!}
+          onClose={() => setEditingJob(null)}
+          onSaved={() => setEditingJob(null)}
+          onError={(msg) => toastError('Failed to save', msg)}
         />
       )}
     </div>
@@ -630,13 +654,14 @@ function AddJobModal({
 // ── JobDetailPanel ────────────────────────────────────────────────────────────
 
 function JobDetailPanel({
-  job, squadId, canWrite, applications, members, onClose,
+  job, squadId, canWrite, applications, members, onEdit, onClose,
 }: {
   job: RecordData<JobData>
   squadId: string
   canWrite: boolean
   applications: RecordData<ApplicationData>[]
   members: MemberInfo[]
+  onEdit?: () => void
   onClose: () => void
 }) {
   const { userId } = useAuth()
@@ -678,13 +703,25 @@ function JobDetailPanel({
           <h2 className="truncate font-semibold text-foreground">{data.title}</h2>
           <p className="text-sm text-muted-foreground">{data.company}</p>
         </div>
-        <button
-          onClick={onClose}
-          aria-label="Close panel"
-          className="mt-0.5 shrink-0 rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          ✕
-        </button>
+        <div className="flex shrink-0 items-center gap-1">
+          {onEdit && (
+            <button
+              onClick={onEdit}
+              aria-label="Edit job"
+              title="Edit job"
+              className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+            >
+              <Pencil className="h-4 w-4" />
+            </button>
+          )}
+          <button
+            onClick={onClose}
+            aria-label="Close panel"
+            className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            ✕
+          </button>
+        </div>
       </div>
 
       <div className="flex-1 space-y-5 overflow-y-auto p-4">
@@ -802,6 +839,121 @@ function JobDetailPanel({
         </form>
       )}
     </div>
+  )
+}
+
+// ── EditJobModal ──────────────────────────────────────────────────────────────
+
+function EditJobModal({
+  job, squadId, onClose, onSaved, onError,
+}: {
+  job: RecordData<JobData>
+  squadId: string
+  onClose: () => void
+  onSaved: () => void
+  onError: (msg: string) => void
+}) {
+  const [form, setForm] = useState({
+    title:       job.data.title       ?? '',
+    company:     job.data.company     ?? '',
+    url:         job.data.url         ?? '',
+    roleType:    job.data.roleType    ?? 'full-time',
+    deadline:    job.data.deadline    ?? '',
+    sponsorship: job.data.sponsorship ?? 'unknown',
+    notes:       job.data.notes       ?? '',
+  })
+  const [loading, setLoading] = useState(false)
+
+  const set = (key: keyof typeof form) =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) =>
+      setForm((f) => ({ ...f, [key]: e.target.value }))
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!form.title.trim() || !form.company.trim()) return
+    setLoading(true)
+    const res = await callAction('updateJob', { jobId: job.recordId, squadId, ...form })
+    setLoading(false)
+    if (res.success) onSaved()
+    else onError(res.error ?? 'Unknown error')
+  }
+
+  return (
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Edit job</DialogTitle>
+        </DialogHeader>
+        <form onSubmit={handleSubmit} className="space-y-3 py-1">
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="ej-title">Job title *</Label>
+              <Input id="ej-title" value={form.title} onChange={set('title')} autoFocus />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="ej-company">Company *</Label>
+              <Input id="ej-company" value={form.company} onChange={set('company')} />
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="ej-url">Job URL</Label>
+            <Input id="ej-url" type="url" placeholder="https://…" value={form.url} onChange={set('url')} />
+          </div>
+
+          <div className="grid grid-cols-3 gap-3">
+            <div className="space-y-1.5">
+              <Label htmlFor="ej-type">Type</Label>
+              <select
+                id="ej-type"
+                value={form.roleType}
+                onChange={set('roleType')}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                <option value="internship">Internship</option>
+                <option value="full-time">Full-time</option>
+                <option value="part-time">Part-time</option>
+                <option value="contract">Contract</option>
+              </select>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="ej-deadline">Deadline</Label>
+              <Input id="ej-deadline" type="date" value={form.deadline} onChange={set('deadline')} />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="ej-sponsor">Sponsorship</Label>
+              <select
+                id="ej-sponsor"
+                value={form.sponsorship}
+                onChange={set('sponsorship')}
+                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+              >
+                <option value="unknown">Unknown</option>
+                <option value="yes">Yes</option>
+                <option value="no">No</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="ej-notes">Notes</Label>
+            <Textarea
+              id="ej-notes"
+              rows={2}
+              value={form.notes}
+              onChange={set('notes') as React.ChangeEventHandler<HTMLTextAreaElement>}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+            <Button type="submit" disabled={!form.title.trim() || !form.company.trim() || loading}>
+              {loading ? 'Saving…' : 'Save'}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   )
 }
 

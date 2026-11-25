@@ -315,6 +315,55 @@ export const actions: Record<string, ActionHandler<Env>> = {
   },
 
   /**
+   * updateJob — edit a job card's mutable fields.
+   *
+   * Requires at least 'member' role.  squadId and jobId are immutable.
+   *
+   * Input:  { jobId, squadId, title, company, url?, roleType?, deadline?, sponsorship?, notes? }
+   * Output: {}
+   */
+  async updateJob({ userId, params, tools }) {
+    const { jobId, squadId, title, company, url, roleType, deadline, sponsorship, notes } = params as {
+      jobId: string
+      squadId: string
+      title: string
+      company: string
+      url?: string
+      roleType?: string
+      deadline?: string
+      sponsorship?: string
+      notes?: string
+    }
+
+    if (!jobId) return { success: false, error: 'jobId is required' }
+    if (!title?.trim()) return { success: false, error: 'title is required' }
+    if (!company?.trim()) return { success: false, error: 'company is required' }
+
+    const membership = await getMembership(tools, userId, squadId)
+    if (!membership) return { success: false, error: 'You are not a member of this squad' }
+    if (!roleAtLeast(membership.role, 'member')) {
+      return { success: false, error: 'Viewers cannot edit jobs' }
+    }
+
+    const jobResult = await tools.get('jobs', jobId)
+    if (!jobResult.success || gData(jobResult)['squadId'] !== squadId) {
+      return { success: false, error: 'Job not found in this squad' }
+    }
+
+    await tools.update('jobs', jobId, {
+      title: title.trim(),
+      company: company.trim(),
+      url: url?.trim() ?? '',
+      roleType: roleType ?? 'full-time',
+      deadline: deadline ?? '',
+      sponsorship: sponsorship ?? 'unknown',
+      notes: notes?.trim() ?? '',
+    })
+
+    return { success: true, data: {} }
+  },
+
+  /**
    * setMyStatus — set the caller's personal application status for a job.
    *
    * Creates or updates the caller's application record (upsert).
