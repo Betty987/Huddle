@@ -66,8 +66,11 @@ function toRec(r: unknown): RawRecord {
 export async function sendDeadlineReminders(env: Env): Promise<void> {
   const ctx = buildCronContext(env, env.OWNER_USER_ID, `app:${env.DEEPSPACE_APP_ID}`)
 
-  const now = Date.now()
-  const in48h = now + 48 * 60 * 60 * 1_000
+  // Compare dates at day granularity (UTC midnight) so a deadline of "2026-11-25"
+  // means the entire calendar day of Nov 25, not just midnight UTC.
+  const todayUtc = new Date()
+  todayUtc.setUTCHours(0, 0, 0, 0)
+  const cutoffUtc = new Date(todayUtc.getTime() + 2 * 24 * 60 * 60 * 1_000) // today + 2 days
 
   // ── 1. Find jobs due within 48 hours that haven't been reminded ───────────
   // We fetch all jobs (up to 2000 — Huddle is a small-group tool) and filter
@@ -79,8 +82,9 @@ export async function sendDeadlineReminders(env: Env): Promise<void> {
       const deadline = r.data['deadline'] as string | undefined
       if (!deadline) return false
       if (r.data['remindedAt']) return false // already reminded
-      const deadlineMs = new Date(deadline).getTime()
-      return !isNaN(deadlineMs) && deadlineMs >= now && deadlineMs <= in48h
+      // Parse as UTC midnight so "2026-11-25" = the whole day of Nov 25
+      const deadlineUtc = new Date(deadline + 'T00:00:00Z')
+      return !isNaN(deadlineUtc.getTime()) && deadlineUtc >= todayUtc && deadlineUtc <= cutoffUtc
     })
 
   if (dueJobs.length === 0) return

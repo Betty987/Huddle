@@ -406,7 +406,7 @@ function ImportJobModal({
   onClose: () => void
   onImported: () => void
 }) {
-  const [mode, setMode]     = useState<'url' | 'text'>('url')
+  const [mode, setMode]     = useState<'url' | 'text'>('text')
   const [url, setUrl]       = useState('')
   const [text, setText]     = useState('')
   const [loading, setLoading] = useState(false)
